@@ -375,6 +375,69 @@ class SystematizationTruncationDetectionTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(call_count, 1)
 
+    async def test_empty_summary_items_is_not_fatal(self) -> None:
+        """An ungrounded run may return no summary items; that must not kill the pipeline.
+
+        ``summary_items`` is never described in the systematization prompt, so
+        whether the model populates it is arbitrary — and it is markedly more
+        likely to come back empty when web grounding is unavailable (the
+        Chat Completions fallback drops the ``web_search_preview`` tool). The
+        sole consumer, ``systematization_convert``, already treats the field as
+        optional, so an empty list is a degraded artifact, not a broken one.
+        """
+        call_count = 0
+
+        async def fake_generate_structured(model, prompt, *, schema_name, json_schema, options):
+            del prompt, schema_name, json_schema, options
+            nonlocal call_count
+            call_count += 1
+            return ModelResponse(
+                model=model,
+                parsed={"systematization": FINAL_SYSTEMATIZATION, "summary_items": []},
+            )
+
+        with TemporaryDirectory() as tmp_dir:
+            out_path = Path(tmp_dir) / "systematization.json"
+            with patch("assert_ai.stages.systematization.generate_structured", new=fake_generate_structured):
+                written_path = await run_systematization(
+                    behavior="harmful advice",
+                    behavior_text="Harmful advice",
+                    save_path=str(out_path),
+                    model_cfg=ModelConfig(name="azure/gpt-5.4", max_tokens=8000),
+                )
+
+            payload = json.loads(Path(written_path).read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["summary_items"], [])
+        self.assertEqual(payload["systematization"], FINAL_SYSTEMATIZATION)
+        self.assertEqual(call_count, 1, "must not spend extra tokens retrying")
+
+    async def test_malformed_summary_item_still_rejected(self) -> None:
+        """Tolerating an empty list must not tolerate a malformed item."""
+
+        async def fake_generate_structured(model, prompt, *, schema_name, json_schema, options):
+            del prompt, schema_name, json_schema, options
+            return ModelResponse(
+                model=model,
+                parsed={
+                    "systematization": FINAL_SYSTEMATIZATION,
+                    "summary_items": [{"description": "   ", "example": "an example"}],
+                },
+            )
+
+        with TemporaryDirectory() as tmp_dir:
+            out_path = Path(tmp_dir) / "systematization.json"
+            with (
+                patch("assert_ai.stages.systematization.generate_structured", new=fake_generate_structured),
+                self.assertRaises(ValueError),
+            ):
+                await run_systematization(
+                    behavior="harmful advice",
+                    behavior_text="Harmful advice",
+                    save_path=str(out_path),
+                    model_cfg=ModelConfig(name="azure/gpt-5.4", max_tokens=8000),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

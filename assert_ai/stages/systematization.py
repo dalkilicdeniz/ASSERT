@@ -93,8 +93,28 @@ def _validate_systematization(systematization: str) -> None:
 
 
 def _validate_summary_items(summary_items: list[SummaryItem]) -> None:
+    """Reject malformed items; tolerate an empty list.
+
+    ``summary_items`` is not described anywhere in the systematization prompt —
+    the prompt's Output Contract names a different set of fields — so whether
+    the model fills the array is left to its own judgement. It reliably does so
+    when the run is web-grounded and has research findings to summarize, and
+    intermittently returns ``[]`` when grounding is unavailable, as it is
+    whenever the Chat Completions fallback drops the ``web_search_preview``
+    tool. Treating that as fatal killed the whole pipeline in its first stage.
+
+    The one consumer, ``systematization_convert``, already treats the field as
+    optional and simply omits its prompt section when the list is empty, so an
+    empty list is a degraded artifact rather than an unusable one. Items that
+    *are* present must still be well-formed.
+    """
     if not summary_items:
-        raise ValueError("systematization requires at least one summary item")
+        log.warning(
+            "systematization returned no summary items; the taxonomy will be "
+            "derived from the systematization text alone. This is expected when "
+            "web grounding is unavailable for the run."
+        )
+        return
     for item in summary_items:
         if not item.description.strip():
             raise ValueError("systematization summary_items.description must be non-empty")
